@@ -588,26 +588,49 @@
 
   <!-- DEBIT categories -->
   <div class="cat-group debit-cats" id="debitCats">
-    <input type="radio" name="category" id="dc1" class="cat-radio" value="Food & Dining" checked>
-    <label for="dc1" class="cat-tile">
-      <span class="cat-icon">🍽️</span>
-      <span class="cat-name">Food</span>
-    </label>
-    <input type="radio" name="category" id="dc2" class="cat-radio" value="Travel">
+    <input type="radio" name="category" id="dc1" class="cat-radio" value="Food & Dining" checked onchange="hideBudgetHint()">
+ 
+    <input type="radio" name="category" id="dc2" class="cat-radio" value="Travel" onchange="hideBudgetHint()">
     <label for="dc2" class="cat-tile">
       <span class="cat-icon">🚌</span>
       <span class="cat-name">Travel</span>
     </label>
-    <input type="radio" name="category" id="dc3" class="cat-radio" value="Shopping">
+    <input type="radio" name="category" id="dc3" class="cat-radio" value="Shopping" onchange="showBudgetHint('Shopping')">
     <label for="dc3" class="cat-tile">
       <span class="cat-icon">🛒</span>
       <span class="cat-name">Shopping</span>
     </label>
-    <input type="radio" name="category" id="dc4" class="cat-radio" value="Savings & Investment">
+    <input type="radio" name="category" id="dc4" class="cat-radio" value="Savings & Investment" onchange="hideBudgetHint()">
     <label for="dc4" class="cat-tile">
       <span class="cat-icon">🏦</span>
       <span class="cat-name">Savings</span>
     </label>
+    <input type="radio" name="category" id="dc5" class="cat-radio" value="Cafe" onchange="showBudgetHint('Cafe')">
+    <label for="dc5" class="cat-tile">
+      <span class="cat-icon">☕</span>
+      <span class="cat-name">Cafe</span>
+    </label>
+    <input type="radio" name="category" id="dc6" class="cat-radio" value="BG" onchange="showBudgetHint('BG')">
+    <label for="dc6" class="cat-tile">
+      <span class="cat-icon">🎮</span>
+      <span class="cat-name">BG</span>
+    </label>
+    <input type="radio" name="category" id="dc7" class="cat-radio" value="Gifting" onchange="showBudgetHint('Gifting')">
+    <label for="dc7" class="cat-tile">
+      <span class="cat-icon">🎁</span>
+      <span class="cat-name">Gifting</span>
+    </label>
+  </div>
+  <!-- Budget hint shown when a budgeted category is selected -->
+  <div id="budgetHint" style="display:none; margin-top:10px; padding:10px 14px; border-radius:10px; background:var(--card); border:1px solid var(--border); font-size:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <span id="budgetHintLabel" style="color:var(--muted);"></span>
+      <span id="budgetHintRemain" style="font-family:'JetBrains Mono'; font-weight:700; font-size:13px;"></span>
+    </div>
+    <div style="margin-top:6px; height:4px; border-radius:4px; background:var(--border); overflow:hidden;">
+      <div id="budgetHintBar" style="height:100%; border-radius:4px; transition:width .3s;"></div>
+    </div>
+    <div id="budgetHintRollover" style="margin-top:5px; font-size:11px; color:var(--mint); display:none;"></div>
   </div>
 
   <!-- Note -->
@@ -706,6 +729,12 @@
       </div>
       <div class="stepper-result-val" id="stepperVal">₹0</div>
     </div>
+    <div class="stepper-result" style="margin-top:8px;">
+      <div>
+        <div class="stepper-result-label">Remaining in hand</div>
+      </div>
+      <div class="stepper-result-val" id="stepperRemain" style="color:var(--mint)">₹0</div>
+    </div>
   </div>
 </div>
 
@@ -715,6 +744,9 @@
     <div class="section-title">Recent Transactions</div>
     <button class="fetch-btn" onclick="fetchFromSheet()">
       🔄 Sync Sheet
+    </button>
+    <button class="fetch-btn" onclick="saveRolloverForNextMonth()" style="background:var(--mint);color:#000;margin-left:6px;" title="Save leftover budgets to carry into next month">
+      ↩ Rollover
     </button>
   </div>
   <div class="txn-list" id="txnList">
@@ -736,11 +768,114 @@
     'Travel': '🚌',
     'Shopping': '🛒',
     'Savings & Investment': '🏦',
+    'Cafe': '☕',
+    'BG': '🎮',
+    'Gifting': '🎁',
     'Salary': '💼',
     'Client': '🤝',
     'Friends': '👥',
     'Other Income': '✨'
   };
+
+  // ─── MONTHLY BUDGETS ────────────────────────────────────────────────────
+  const MONTHLY_LIMITS = { 'Cafe': 2500, 'Shopping': 2500, 'BG': 10000, 'Gifting': 5000 };
+  let sheetRollovers = {}; // loaded from Rollover sheet on sync
+
+  function monthKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  }
+
+  function prevMonthKey() {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  }
+
+  async function checkRollover() {
+    // Only load rollover amounts explicitly saved to the Rollover sheet
+    // Rollover is never auto-computed — it must be triggered manually at month end
+    try {
+      const res = await fetch(config.getUrl + '?type=rollover');
+      if (res.ok) {
+        const rows = await res.json();
+        sheetRollovers = {};
+        rows.forEach(r => {
+          if (r.month === monthKey()) sheetRollovers[r.category] = Number.parseFloat(r.amount) || 0;
+        });
+      }
+    } catch(e) { /* offline — no rollover */ }
+  }
+
+  // Call this manually at month end to save leftover budgets as rollover for next month
+  async function saveRolloverForNextMonth() {
+    const nextMonth = (() => {
+      const d = new Date();
+      d.setMonth(d.getMonth() + 1);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    })();
+    for (const cat of Object.keys(MONTHLY_LIMITS)) {
+      const spent = getSpentThisMonth(cat);
+      const rollover = sheetRollovers[cat] || 0;
+      const leftover = Math.max(0, MONTHLY_LIMITS[cat] + rollover - spent);
+      if (leftover > 0) {
+        await fetch(config.postUrl, {
+          method: 'POST',
+          body: JSON.stringify({ type: 'rollover', category: cat, month: nextMonth, amount: leftover })
+        });
+      }
+    }
+    showToast('success', '↩ Rollover Saved', 'Leftover budgets carried to next month in sheet.');
+  }
+
+  function getSpentInMonth(category, yyyymm) {
+    const [year, mon] = yyyymm.split('-');
+    return transactions.filter(t =>
+      t.type === 'debit' && t.category === category &&
+      t.date && t.date.includes(`${parseInt(mon)}/${year.slice(2)}`)
+    ).reduce((s, t) => s + t.amount, 0);
+  }
+
+  function getSpentThisMonth(category) {
+    return getSpentInMonth(category, monthKey());
+  }
+
+  function showBudgetHint(category) {
+    if (!MONTHLY_LIMITS[category]) { hideBudgetHint(); return; }
+    const limit = MONTHLY_LIMITS[category];
+    const rollover = sheetRollovers[category] || 0;
+    const effectiveLimit = limit + rollover;
+    const spent = getSpentThisMonth(category);
+    const remaining = Math.max(0, effectiveLimit - spent);
+    const pct = Math.min(100, (spent / effectiveLimit) * 100);
+    const color = pct >= 90 ? 'var(--coral)' : pct >= 60 ? 'var(--gold)' : 'var(--mint)';
+
+    document.getElementById('budgetHint').style.display = 'block';
+    document.getElementById('budgetHintLabel').textContent =
+      `${category} budget: ₹${formatNum(spent)} spent of ₹${formatNum(effectiveLimit)}`;
+    document.getElementById('budgetHintRemain').textContent = `₹${formatNum(remaining)} left`;
+    document.getElementById('budgetHintRemain').style.color = color;
+    document.getElementById('budgetHintBar').style.width = pct + '%';
+    document.getElementById('budgetHintBar').style.background = color;
+
+    const rolloverEl = document.getElementById('budgetHintRollover');
+    if (rollover > 0) {
+      rolloverEl.style.display = 'block';
+      rolloverEl.textContent = `↩ ₹${formatNum(rollover)} carried over from last month`;
+    } else {
+      rolloverEl.style.display = 'none';
+    }
+  }
+
+  function hideBudgetHint() {
+    document.getElementById('budgetHint').style.display = 'none';
+  }
+
+  // Refresh budget hint after sync so numbers are up to date
+  function refreshActiveBudgetHint() {
+    const checked = document.querySelector('.cat-radio:checked');
+    if (checked && MONTHLY_LIMITS[checked.value]) showBudgetHint(checked.value);
+  }
 
 let config = {
   postUrl: "https://script.google.com/macros/s/AKfycbymFQ9wqoozNlAZN0z1Jdnel8mpG4VfGzYY57tCr5-EGVqfPoO-TURi433aBHrHcrwv/exec",
@@ -748,11 +883,12 @@ let config = {
   sheet: "Sheet1"
 };
   // ─── INIT ─────────────────────────────────────────────────────────────
-  function init() {
+  async function init() {
     setHeaderDate();
     renderStats();
     renderTransactions();
     updateStepper(stepperPct);
+    await checkRollover();
     if (config.postUrl) document.getElementById('postUrlInput').value = config.postUrl;
     if (config.getUrl)  document.getElementById('getUrlInput').value  = config.getUrl;
     if (config.sheet)   document.getElementById('sheetNameInput').value = config.sheet;
@@ -783,10 +919,10 @@ let config = {
       creditCats.classList.add('active');
       debitCats.classList.remove('active');
       catLabel.textContent = 'Source of Credit';
-      // auto-select first credit radio
       document.getElementById('cc1').checked = true;
       sb.className = 'submit-btn credit-mode';
       sb.querySelector('.btn-text').textContent = 'Add Credit Entry';
+      hideBudgetHint();
     } else {
       debitCats.classList.add('active');
       creditCats.classList.remove('active');
@@ -852,6 +988,7 @@ let config = {
   function updateStepperResult(totalCredit) {
     const val = totalCredit * (stepperPct / 100);
     document.getElementById('stepperVal').textContent = '₹' + formatNum(val);
+    document.getElementById('stepperRemain').textContent = '₹' + formatNum(totalCredit - val);
   }
 
   // Drag stepper
@@ -952,8 +1089,14 @@ let config = {
         return;
       }
       const data = await res.json();
-      if (Array.isArray(data)) {
-        transactions = data.map((row, i) => ({
+      // handle plain array or wrapped {data:[]} / {result:'success', entries:[]} formats
+      const rows = Array.isArray(data) ? data
+                 : Array.isArray(data.data) ? data.data
+                 : Array.isArray(data.entries) ? data.entries
+                 : Array.isArray(data.rows) ? data.rows
+                 : null;
+      if (rows !== null) {
+        transactions = rows.map((row, i) => ({
           id: row.id || i,
           amount: parseFloat(row.amount || row.Amount || 0),
           type: (row.type || row.Type || 'debit').toLowerCase(),
@@ -966,8 +1109,10 @@ let config = {
         renderStats();
         renderTransactions();
         showToast('success', '✅ Synced!', `${transactions.length} entries loaded from sheet.`);
+        await checkRollover();
+        refreshActiveBudgetHint();
       } else {
-        showToast('error', '⚠️ Unexpected Response', 'AppScript did not return an array. Check your doGet function.');
+        showToast('error', '⚠️ Unexpected Response', `AppScript returned: ${JSON.stringify(data).slice(0, 80)}`);
       }
     } catch(e) {
       showToast('error', '❌ Fetch Failed', 'CORS error or invalid URL. Ensure the AppScript is deployed as "Anyone" with CORS headers.');
