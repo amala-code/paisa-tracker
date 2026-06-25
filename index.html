@@ -590,10 +590,20 @@
   <div class="cat-group debit-cats" id="debitCats">
     <input type="radio" name="category" id="dc1" class="cat-radio" value="Food & Dining" checked onchange="hideBudgetHint()">
  
-    <input type="radio" name="category" id="dc2" class="cat-radio" value="Travel" onchange="hideBudgetHint()">
+    <input type="radio" name="category" id="dc2" class="cat-radio" value="Petrol" onchange="hideBudgetHint()">
     <label for="dc2" class="cat-tile">
-      <span class="cat-icon">🚌</span>
-      <span class="cat-name">Travel</span>
+      <span class="cat-icon">⛽</span>
+      <span class="cat-name">Petrol</span>
+    </label>
+    <input type="radio" name="category" id="dc8" class="cat-radio" value="Blinkit" onchange="hideBudgetHint()">
+    <label for="dc8" class="cat-tile">
+      <span class="cat-icon">🛵</span>
+      <span class="cat-name">Blinkit</span>
+    </label>
+    <input type="radio" name="category" id="dc9" class="cat-radio" value="Zomato" onchange="hideBudgetHint()">
+    <label for="dc9" class="cat-tile">
+      <span class="cat-icon">🍕</span>
+      <span class="cat-name">Zomato</span>
     </label>
     <input type="radio" name="category" id="dc3" class="cat-radio" value="Shopping" onchange="showBudgetHint('Shopping')">
     <label for="dc3" class="cat-tile">
@@ -691,7 +701,7 @@
     </div>
     <div class="fd-info">
       <div class="fd-info-row">
-        <span class="fd-info-label">Total Credited</span>
+        <span class="fd-info-label">Net Balance</span>
         <span class="fd-info-val" id="fdCredited" style="color:var(--mint)">₹0</span>
       </div>
       <div class="fd-info-row">
@@ -765,7 +775,9 @@
 
   const categories = {
     'Food & Dining': '🍽️',
-    'Travel': '🚌',
+    'Petrol': '⛽',
+    'Blinkit': '🛵',
+    'Zomato': '🍕',
     'Shopping': '🛒',
     'Savings & Investment': '🏦',
     'Cafe': '☕',
@@ -817,8 +829,8 @@
     for (const cat of Object.keys(MONTHLY_LIMITS)) {
       const spent = getSpentThisMonth(cat);
       const rollover = sheetRollovers[cat] || 0;
-      const leftover = Math.max(0, MONTHLY_LIMITS[cat] + rollover - spent);
-      if (leftover > 0) {
+      const leftover = MONTHLY_LIMITS[cat] + rollover - spent; // can be negative if overspent
+      if (leftover !== 0) {
         await fetch(config.postUrl, {
           method: 'POST',
           body: JSON.stringify({ type: 'rollover', category: cat, month: nextMonth, amount: leftover })
@@ -828,12 +840,46 @@
     showToast('success', '↩ Rollover Saved', 'Leftover budgets carried to next month in sheet.');
   }
 
+  function parseDateToMonthKey(dateStr) {
+    if (!dateStr) return '';
+    // Try ISO: 2026-06-25
+    if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 7);
+    const parts = dateStr.split('/');
+    if (parts.length < 3) return '';
+    const p0 = Number.parseInt(parts[0]);
+    const p1 = Number.parseInt(parts[1]);
+    const p2 = Number.parseInt(parts[2]);
+    // 4-digit year in parts[2]: could be DD/MM/YYYY or MM/DD/YYYY
+    if (p2 > 1000) {
+      // if p0 > 12 it must be day → MM/DD/YYYY? No: p0>12 means p0 is day → DD/MM/YYYY
+      // if p1 > 12 it must be day → MM/DD/YYYY
+      const month = p1 > 12 ? p0 : p1;
+      return `${p2}-${String(month).padStart(2, '0')}`;
+    }
+    return '';
+  }
+
   function getSpentInMonth(category, yyyymm) {
-    const [year, mon] = yyyymm.split('-');
-    return transactions.filter(t =>
-      t.type === 'debit' && t.category === category &&
-      t.date && t.date.includes(`${parseInt(mon)}/${year.slice(2)}`)
-    ).reduce((s, t) => s + t.amount, 0);
+    return transactions.filter(t => {
+      if (t.type !== 'debit' || t.category !== category) return false;
+      // prefer stored month key (added by submitEntry / fetchFromSheet)
+      if (t.month) return t.month === yyyymm;
+      // fallback: try to parse date — handles DD/MM/YYYY and MM/DD/YYYY
+      if (!t.date) return false;
+      const parts = t.date.split('/');
+      if (parts.length < 3) return false;
+      const [y, m] = yyyymm.split('-');
+      const yr = Number.parseInt(y);
+      const mo = Number.parseInt(m);
+      const p0 = Number.parseInt(parts[0]);
+      const p1 = Number.parseInt(parts[1]);
+      const p2 = Number.parseInt(parts[2]);
+      // DD/MM/YYYY: p2=year, p1=month
+      if (p2 === yr && p1 === mo) return true;
+      // MM/DD/YYYY: p2=year, p0=month
+      if (p2 === yr && p0 === mo && p1 > 12) return true;
+      return false;
+    }).reduce((s, t) => s + t.amount, 0);
   }
 
   function getSpentThisMonth(category) {
@@ -846,21 +892,28 @@
     const rollover = sheetRollovers[category] || 0;
     const effectiveLimit = limit + rollover;
     const spent = getSpentThisMonth(category);
-    const remaining = Math.max(0, effectiveLimit - spent);
+    const remaining = effectiveLimit - spent;
+    const isOverBudget = remaining < 0;
     const pct = Math.min(100, (spent / effectiveLimit) * 100);
-    const color = pct >= 90 ? 'var(--coral)' : pct >= 60 ? 'var(--gold)' : 'var(--mint)';
+    const color = isOverBudget ? 'var(--coral)' : pct >= 90 ? 'var(--coral)' : pct >= 60 ? 'var(--gold)' : 'var(--mint)';
 
     document.getElementById('budgetHint').style.display = 'block';
     document.getElementById('budgetHintLabel').textContent =
       `${category} budget: ₹${formatNum(spent)} spent of ₹${formatNum(effectiveLimit)}`;
-    document.getElementById('budgetHintRemain').textContent = `₹${formatNum(remaining)} left`;
+    document.getElementById('budgetHintRemain').textContent =
+      isOverBudget ? `₹${formatNum(Math.abs(remaining))} over budget ⚠️` : `₹${formatNum(remaining)} left`;
     document.getElementById('budgetHintRemain').style.color = color;
-    document.getElementById('budgetHintBar').style.width = pct + '%';
+    document.getElementById('budgetHintBar').style.width = (isOverBudget ? 100 : pct) + '%';
     document.getElementById('budgetHintBar').style.background = color;
 
     const rolloverEl = document.getElementById('budgetHintRollover');
-    if (rollover > 0) {
+    if (rollover < 0) {
       rolloverEl.style.display = 'block';
+      rolloverEl.style.color = 'var(--coral)';
+      rolloverEl.textContent = `⚠️ ₹${formatNum(Math.abs(rollover))} over-spent carried from last month`;
+    } else if (rollover > 0) {
+      rolloverEl.style.display = 'block';
+      rolloverEl.style.color = 'var(--mint)';
       rolloverEl.textContent = `↩ ₹${formatNum(rollover)} carried over from last month`;
     } else {
       rolloverEl.style.display = 'none';
@@ -889,9 +942,6 @@ let config = {
     renderTransactions();
     updateStepper(stepperPct);
     await checkRollover();
-    if (config.postUrl) document.getElementById('postUrlInput').value = config.postUrl;
-    if (config.getUrl)  document.getElementById('getUrlInput').value  = config.getUrl;
-    if (config.sheet)   document.getElementById('sheetNameInput').value = config.sheet;
   }
 
   function setHeaderDate() {
@@ -945,27 +995,26 @@ let config = {
     document.getElementById('totalDebit').textContent  = '₹' + formatNum(totalDebit);
     document.getElementById('totalEntries').textContent = transactions.length;
 
-    // FD Ring
-    const pct = Math.min((totalCredit / 100000) * 100, 100);
+    // FD Ring — based on net balance (what you actually have)
+    const fdPct = Math.min((net / 100000) * 100, 100);
     const circ = 263.9;
-    const offset = circ - (circ * pct / 100);
+    const offset = circ - (circ * Math.max(0, fdPct) / 100);
     document.getElementById('ringFill').style.strokeDashoffset = offset;
-    document.getElementById('ringPct').textContent = Math.round(pct) + '%';
-    document.getElementById('fdCredited').textContent = '₹' + formatNum(totalCredit);
-    document.getElementById('fdRemaining').textContent = '₹' + formatNum(Math.max(0, 100000 - totalCredit));
+    document.getElementById('ringPct').textContent = Math.round(Math.max(0, fdPct)) + '%';
+    document.getElementById('fdCredited').textContent = '₹' + formatNum(net);
+    document.getElementById('fdRemaining').textContent = '₹' + formatNum(Math.max(0, 100000 - net));
 
     // FD 60% toast
-    const creditPct = (totalCredit / 100000) * 100;
     const prevTxn = transactions.length > 1 ? transactions.slice(0,-1) : [];
-    const prevCredit = prevTxn.filter(t=>t.type==='credit').reduce((s,t)=>s+t.amount,0);
-    const prevPct = (prevCredit / 100000) * 100;
-    if (prevPct < 60 && creditPct >= 60) {
+    const prevNet = prevTxn.filter(t=>t.type==='credit').reduce((s,t)=>s+t.amount,0)
+                  - prevTxn.filter(t=>t.type==='debit').reduce((s,t)=>s+t.amount,0);
+    if (prevNet < 60000 && net >= 60000) {
       setTimeout(() => showToast('fd-toast', '🎯 FD Milestone!',
-        `You've reached 60% of ₹1L goal! Time to invest ₹${formatNum(totalCredit * 0.6)} in FD.`, 6000), 500);
+        `Net balance hit 60% of ₹1L goal! Consider putting ₹${formatNum(net * 0.6)} in FD.`, 6000), 500);
     }
 
     // Update stepper
-    updateStepperResult(totalCredit);
+    updateStepperResult(totalCredit, totalDebit);
   }
 
   // ─── STEPPER ───────────────────────────────────────────────────────────
@@ -982,13 +1031,18 @@ let config = {
     document.getElementById('stepperThumb').style.left = pct + '%';
     document.getElementById('stepperPctLabel').textContent = pct;
     const totalCredit = transactions.filter(t=>t.type==='credit').reduce((s,t)=>s+t.amount,0);
-    updateStepperResult(totalCredit);
+    const totalDebit  = transactions.filter(t=>t.type==='debit').reduce((s,t)=>s+t.amount,0);
+    updateStepperResult(totalCredit, totalDebit);
   }
 
-  function updateStepperResult(totalCredit) {
-    const val = totalCredit * (stepperPct / 100);
-    document.getElementById('stepperVal').textContent = '₹' + formatNum(val);
-    document.getElementById('stepperRemain').textContent = '₹' + formatNum(totalCredit - val);
+  function updateStepperResult(totalCredit, totalDebit) {
+    if (totalDebit === undefined) {
+      totalDebit = transactions.filter(t=>t.type==='debit').reduce((s,t)=>s+t.amount,0);
+    }
+    const netBalance = totalCredit - totalDebit;
+    const fdAmount = totalCredit * (stepperPct / 100);
+    document.getElementById('stepperVal').textContent = '₹' + formatNum(fdAmount);
+    document.getElementById('stepperRemain').textContent = '₹' + formatNum(netBalance - fdAmount);
   }
 
   // Drag stepper
@@ -1034,6 +1088,7 @@ let config = {
       type: currentType,
       category,
       note,
+      month: monthKey(),
       date: now.toLocaleDateString('en-IN'),
       time: now.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })
     };
@@ -1068,6 +1123,7 @@ let config = {
     document.getElementById('noteInput').value = '';
     renderStats();
     renderTransactions();
+    if (currentType === 'debit') refreshActiveBudgetHint();
   }
 
   // ─── FETCH FROM SHEET ──────────────────────────────────────────────────
@@ -1096,15 +1152,19 @@ let config = {
                  : Array.isArray(data.rows) ? data.rows
                  : null;
       if (rows !== null) {
-        transactions = rows.map((row, i) => ({
-          id: row.id || i,
-          amount: parseFloat(row.amount || row.Amount || 0),
-          type: (row.type || row.Type || 'debit').toLowerCase(),
-          category: row.category || row.Category || 'Other',
-          note: row.note || row.Note || '',
-          date: row.date || row.Date || '',
-          time: row.time || row.Time || ''
-        })).filter(t => t.amount > 0);
+        transactions = rows.map((row, i) => {
+          const dateStr = row.date || row.Date || '';
+          return {
+            id: row.id || i,
+            amount: Number.parseFloat(row.amount || row.Amount || 0),
+            type: (row.type || row.Type || 'debit').toLowerCase(),
+            category: row.category || row.Category || 'Other',
+            note: row.note || row.Note || '',
+            month: row.month || parseDateToMonthKey(dateStr),
+            date: dateStr,
+            time: row.time || row.Time || ''
+          };
+        }).filter(t => t.amount > 0);
         localStorage.setItem('paisa_txns', JSON.stringify(transactions));
         renderStats();
         renderTransactions();
